@@ -48,10 +48,16 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Ensure Docker Hub credentials are set
-        if: ${{ inputs.publish_dockerhub && (secrets.DOCKER_USERNAME == '' || secrets.DOCKER_PASSWORD == '') }}
+        if: ${{ inputs.publish_dockerhub }}
+        shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         run: |
-          echo "DOCKER_USERNAME and DOCKER_PASSWORD secrets are required to publish to Docker Hub"
-          exit 1
+          if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PASSWORD" ]; then
+            echo "DOCKER_USERNAME and DOCKER_PASSWORD secrets are required to publish to Docker Hub"
+            exit 1
+          fi
 
       - name: Login to DockerHub
         if: ${{ inputs.publish_dockerhub }}
