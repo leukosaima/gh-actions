@@ -1,0 +1,191 @@
+name: docker-build
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        type: string
+        required: false
+        default: linux/amd64,linux/arm64
+      publish_dockerhub:
+        type: boolean
+        required: false
+        default: true
+      publish_ghcr:
+        type: boolean
+        required: false
+        default: true
+      dockerhub_image:
+        type: string
+        required: false
+        default: ${{ github.repository }}
+      ghcr_image:
+        type: string
+        required: false
+        default: ghcr.io/${{ github.repository }}
+    secrets:
+      DOCKER_USERNAME:
+        required: false
+      DOCKER_PASSWORD:
+        required: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Ensure Docker Hub credentials are set
+        if: ${{ inputs.publish_dockerhub && (secrets.DOCKER_USERNAME == '' || secrets.DOCKER_PASSWORD == '') }}
+        run: |
+          echo "DOCKER_USERNAME and DOCKER_PASSWORD secrets are required to publish to Docker Hub"
+          exit 1
+
+      - name: Login to DockerHub
+        if: ${{ inputs.publish_dockerhub }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.publish_ghcr }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select image destinations
+        id: destinations
+        shell: bash
+        run: |
+          {
+            echo "images<<EOF"
+            if [ "${{ inputs.publish_dockerhub }}" = "true" ]; then
+              echo "${{ inputs.dockerhub_image }}"
+            fi
+            if [ "${{ inputs.publish_ghcr }}" = "true" ]; then
+              echo "${{ inputs.ghcr_image }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate Docker tags and labels
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ steps.destinations.outputs.images }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=ref,event=branch
+            type=ref,event=pr
+          flavor: |
+            latest=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Publish Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: ${{ inputs.platforms }}
+          push: true
+          sbom: true
+          provenance: mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Choose primary image for inspection
+        id: primary
+        shell: bash
+        run: |
+          if [ "${{ inputs.publish_dockerhub }}" = "true" ]; then
+            echo "image=${{ inputs.dockerhub_image }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=${{ inputs.ghcr_image }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check manifest
+        run: |
+          docker buildx imagetools inspect ${{ steps.primary.outputs.image }}:${{ steps.meta.outputs.version }}
+
+      - name: Inspect image
+        run: |
+          docker pull ${{ steps.primary.outputs.image }}:${{ steps.meta.outputs.version }}
+          docker image inspect ${{ steps.primary.outputs.image }}:${{ steps.meta.outputs.version }}
+
+      - name: Update previous release to remove latest tag
+        if: github.event_name == 'release' && github.event.release.prerelease == false
+        run: |
+          PREV_RELEASE=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.prerelease == false and .id != ${{ github.event.release.id }}) | .id' \
+            | head -n 1)
+
+          if [ -n "$PREV_RELEASE" ]; then
+            PREV_BODY=$(gh api repos/${{ github.repository }}/releases/$PREV_RELEASE --jq .body)
+            UPDATED_BODY=$(echo "$PREV_BODY" | sed '/- `latest`/d')
+
+            gh api repos/${{ github.repository }}/releases/$PREV_RELEASE \
+              -X PATCH \
+              -f body="$UPDATED_BODY"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release with Docker links
+        if: github.event_name == 'release'
+        run: |
+          RELEASE_BODY=$(cat << 'EOF'
+          ## Docker Images
+
+          Pull the image:
+          ```bash
+          docker pull ${{ github.repository }}:${{ steps.meta.outputs.version }}
+          ```
+
+          Or use GitHub Container Registry:
+          ```bash
+          docker pull ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
+          ```
+
+          Available tags:
+          - `${{ steps.meta.outputs.version }}`
+          EOF
+          )
+
+          if [ "${{ github.event.release.prerelease }}" == "false" ]; then
+            RELEASE_BODY="${RELEASE_BODY}
+          - \`latest\`"
+          fi
+
+          CURRENT_BODY=$(gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} --jq .body)
+          NEW_BODY="${CURRENT_BODY}
+
+          ${RELEASE_BODY}"
+
+          gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} \
+            -X PATCH \
+            -f body="${NEW_BODY}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
