@@ -141,57 +141,14 @@ jobs:
           docker pull ${{ steps.primary.outputs.image }}:${{ steps.meta.outputs.version }}
           docker image inspect ${{ steps.primary.outputs.image }}:${{ steps.meta.outputs.version }}
 
-      - name: Update previous release to remove latest tag
-        if: github.event_name == 'release' && github.event.release.prerelease == false
-        run: |
-          PREV_RELEASE=$(gh api repos/${{ github.repository }}/releases \
-            --jq '.[] | select(.prerelease == false and .id != ${{ github.event.release.id }}) | .id' \
-            | head -n 1)
-
-          if [ -n "$PREV_RELEASE" ]; then
-            PREV_BODY=$(gh api repos/${{ github.repository }}/releases/$PREV_RELEASE --jq .body)
-            UPDATED_BODY=$(echo "$PREV_BODY" | sed '/- `latest`/d')
-
-            gh api repos/${{ github.repository }}/releases/$PREV_RELEASE \
-              -X PATCH \
-              -f body="$UPDATED_BODY"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update release with Docker links
-        if: github.event_name == 'release'
-        run: |
-          RELEASE_BODY=$(cat << 'EOF'
-          ## Docker Images
-
-          Pull the image:
-          ```bash
-          docker pull ${{ github.repository }}:${{ steps.meta.outputs.version }}
-          ```
-
-          Or use GitHub Container Registry:
-          ```bash
-          docker pull ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
-          ```
-
-          Available tags:
-          - `${{ steps.meta.outputs.version }}`
-          EOF
-          )
-
-          if [ "${{ github.event.release.prerelease }}" == "false" ]; then
-            RELEASE_BODY="${RELEASE_BODY}
-          - \`latest\`"
-          fi
-
-          CURRENT_BODY=$(gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} --jq .body)
-          NEW_BODY="${CURRENT_BODY}
-
-          ${RELEASE_BODY}"
-
-          gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} \
-            -X PATCH \
-            -f body="${NEW_BODY}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  release-notes:
+    name: update-release-notes
+    if: github.event_name == 'release'
+    needs:
+      - docker
+    uses: ./.github/workflows/docker-release-notes.yaml
+    with:
+      dockerhub_image: ${{ inputs.dockerhub_image }}
+      ghcr_image: ${{ inputs.ghcr_image }}
+      version: ${{ github.event.release.tag_name }}
+    secrets: inherit
