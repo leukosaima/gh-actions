@@ -34,14 +34,16 @@ jobs:
             DOCKERHUB_IMAGE="${{ github.repository }}"
           fi
 
+
           if [ -z "$GHCR_IMAGE" ]; then
             GHCR_IMAGE="ghcr.io/${{ github.repository }}"
           fi
 
           if [ -z "$VERSION" ]; then
             VERSION="${{ github.event.release.tag_name }}"
-            VERSION="${VERSION#v}"
           fi
+
+          VERSION="${VERSION#v}"
 
           echo "dockerhub_image=$DOCKERHUB_IMAGE" >> "$GITHUB_OUTPUT"
           echo "ghcr_image=$GHCR_IMAGE" >> "$GITHUB_OUTPUT"
