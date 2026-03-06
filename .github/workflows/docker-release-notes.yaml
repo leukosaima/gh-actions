@@ -1,0 +1,104 @@
+name: docker-release-notes
+
+on:
+  workflow_call:
+    inputs:
+      dockerhub_image:
+        type: string
+        required: false
+      ghcr_image:
+        type: string
+        required: false
+      version:
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release-notes:
+    name: mutate-release-notes
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve image names and version
+        id: vars
+        shell: bash
+        run: |
+          DOCKERHUB_IMAGE="${{ inputs.dockerhub_image }}"
+          GHCR_IMAGE="${{ inputs.ghcr_image }}"
+          VERSION="${{ inputs.version }}"
+
+          if [ -z "$DOCKERHUB_IMAGE" ]; then
+            DOCKERHUB_IMAGE="${{ github.repository }}"
+          fi
+
+
+          if [ -z "$GHCR_IMAGE" ]; then
+            GHCR_IMAGE="ghcr.io/${{ github.repository }}"
+          fi
+
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
+
+          VERSION="${VERSION#v}"
+
+          echo "dockerhub_image=$DOCKERHUB_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "ghcr_image=$GHCR_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update previous release to remove latest tag
+        if: github.event.release.prerelease == false
+        run: |
+          PREV_RELEASE=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.prerelease == false and .id != ${{ github.event.release.id }}) | .id' \
+            | head -n 1)
+
+          if [ -n "$PREV_RELEASE" ]; then
+            PREV_BODY=$(gh api repos/${{ github.repository }}/releases/$PREV_RELEASE --jq .body)
+            UPDATED_BODY=$(echo "$PREV_BODY" | sed '/- `latest`/d')
+
+            gh api repos/${{ github.repository }}/releases/$PREV_RELEASE \
+              -X PATCH \
+              -f body="$UPDATED_BODY"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update release with Docker links
+        run: |
+          RELEASE_BODY=$(cat << 'EOF'
+          ## Docker Images
+
+          Pull the image:
+          ```bash
+          docker pull ${{ steps.vars.outputs.dockerhub_image }}:${{ steps.vars.outputs.version }}
+          ```
+
+          Or use GitHub Container Registry:
+          ```bash
+          docker pull ${{ steps.vars.outputs.ghcr_image }}:${{ steps.vars.outputs.version }}
+          ```
+
+          Available tags:
+          - `${{ steps.vars.outputs.version }}`
+          EOF
+          )
+
+          if [ "${{ github.event.release.prerelease }}" == "false" ]; then
+            RELEASE_BODY="${RELEASE_BODY}
+          - \`latest\`"
+          fi
+
+          CURRENT_BODY=$(gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} --jq .body)
+          NEW_BODY="${CURRENT_BODY}
+
+          ${RELEASE_BODY}"
+
+          gh api repos/${{ github.repository }}/releases/${{ github.event.release.id }} \
+            -X PATCH \
+            -f body="${NEW_BODY}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
