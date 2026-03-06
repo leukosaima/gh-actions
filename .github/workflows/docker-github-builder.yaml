@@ -1,0 +1,74 @@
+name: docker-github-builder
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        type: string
+        required: false
+        default: linux/amd64,linux/arm64
+      dockerhub_image:
+        type: string
+        required: false
+        default: ${{ github.repository }}
+      ghcr_image:
+        type: string
+        required: false
+        default: ghcr.io/${{ github.repository }}
+    secrets:
+      DOCKER_USERNAME:
+        required: true
+      DOCKER_PASSWORD:
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  docker:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: leukosaima/github-builder/.github/workflows/build.yml@main
+    with:
+      output: image
+      push: true
+      setup-qemu: true
+      sign: false
+      platforms: ${{ inputs.platforms }}
+      sbom: true
+      meta-images: |
+        ${{ inputs.dockerhub_image }}
+        ${{ inputs.ghcr_image }}
+      meta-tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=semver,pattern={{major}}
+        type=ref,event=branch
+        type=ref,event=pr
+      meta-flavor: |
+        latest=${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+    secrets:
+      registry-auths: |
+        - registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+        - registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  release-notes:
+    name: update-release-notes
+    if: github.event_name == 'release'
+    needs:
+      - docker
+    permissions:
+      contents: write
+    uses: ./.github/workflows/docker-release-notes.yaml
+    with:
+      dockerhub_image: ${{ inputs.dockerhub_image }}
+      ghcr_image: ${{ inputs.ghcr_image }}
+      version: ${{ github.event.release.tag_name }}
+    secrets: inherit
