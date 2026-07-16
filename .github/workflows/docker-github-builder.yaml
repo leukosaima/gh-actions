@@ -31,7 +31,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: leukosaima/github-builder/.github/workflows/build.yml@17bd7d64200cae4ba58ffc099934e8012ae320f2 # main
+    uses: leukosaima/github-builder/.github/workflows/build.yml@8c12d68741b7ad402f0d9d661d806046071861bc # main
     with:
       output: image
       push: true
